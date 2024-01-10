@@ -3,6 +3,7 @@ package com.xingchen.xcso.datasource;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xingchen.xcso.model.dto.post.PostQueryRequest;
+import com.xingchen.xcso.model.entity.Post;
 import com.xingchen.xcso.model.vo.PostVO;
 import com.xingchen.xcso.service.PostService;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +13,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 帖子服务实现
@@ -32,10 +35,16 @@ public class PostDataSource implements DataSource<PostVO> {
         postQueryRequest.setSearchText(searchText);
         postQueryRequest.setCurrent(pageNum);
         postQueryRequest.setPageSize(pageSize);
-        ServletRequestAttributes servletRequestAttributes =  (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        ServletRequestAttributes servletRequestAttributes = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
         HttpServletRequest request = servletRequestAttributes.getRequest();
-        Page<PostVO> postVOPage = postService.listPostVOByPage(postQueryRequest, request);
-        return postVOPage;
+        Page<Post> postPage = postService.searchFromEs(postQueryRequest);
+        return postService.getPostVOPage(postPage, request);
+    }
+
+
+    @Override
+    public List<String> getSearchPrompt(String keyword) {
+        return Collections.emptyList();
     }
 }
 

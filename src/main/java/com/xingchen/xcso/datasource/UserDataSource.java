@@ -9,6 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 用户服务实现
@@ -31,5 +33,10 @@ public class UserDataSource implements DataSource<UserVO> {
         userQueryRequest.setPageSize(pageSize);
         Page<UserVO> userVOPage = userService.listUserVOByPage(userQueryRequest);
         return userVOPage;
+    }
+
+    @Override
+    public List<String> getSearchPrompt(String keyword) {
+        return Collections.emptyList();
     }
 }

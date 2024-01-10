@@ -2,6 +2,7 @@ package com.xingchen.xcso.model.vo;
 
 
 import com.xingchen.xcso.model.entity.Picture;
+import com.xingchen.xcso.model.entity.Video;
 import lombok.Data;
 
 import java.io.Serializable;
@@ -22,7 +23,14 @@ public class SearchVO implements Serializable {
 
     private List<Picture> pictureList;
 
-    private List<?> dataList;
+
+    private List<Video> videoList;
+
+
+    private List<?> dataList;//只请求其中一个时可以用dataList
+
+
+    private long total;
 
     private static final long serialVersionUID = 1L;
 

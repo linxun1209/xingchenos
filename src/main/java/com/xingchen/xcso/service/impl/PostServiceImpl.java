@@ -1,5 +1,6 @@
 package com.xingchen.xcso.service.impl;
 
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -12,6 +13,7 @@ import com.xingchen.xcso.mapper.PostFavourMapper;
 import com.xingchen.xcso.mapper.PostMapper;
 import com.xingchen.xcso.mapper.PostThumbMapper;
 import com.xingchen.xcso.model.dto.post.PostEsDTO;
+import com.xingchen.xcso.model.dto.post.PostEsHighlightData;
 import com.xingchen.xcso.model.dto.post.PostQueryRequest;
 import com.xingchen.xcso.model.entity.Post;
 import com.xingchen.xcso.model.entity.PostFavour;
@@ -36,9 +38,11 @@ import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.elasticsearch.search.sort.SortBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
+import org.jetbrains.annotations.NotNull;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchRestTemplate;
 import org.springframework.data.elasticsearch.core.SearchHit;
@@ -135,6 +139,76 @@ public class PostServiceImpl extends ServiceImpl<PostMapper, Post> implements Po
 
     @Override
     public Page<Post> searchFromEs(PostQueryRequest postQueryRequest) {
+        // 构造查询条件
+        NativeSearchQuery searchQuery = getNativeSearchQuery(postQueryRequest);
+        SearchHits<PostEsDTO> searchHits = elasticsearchRestTemplate.search(searchQuery, PostEsDTO.class);
+        Page<Post> page = new Page<>();
+        page.setTotal(searchHits.getTotalHits());
+        List<Post> resourceList = new ArrayList<>();
+        // 查出结果后，从 db 获取最新动态数据（比如点赞数）
+        if (searchHits.hasSearchHits()) {
+            List<SearchHit<PostEsDTO>> searchHitList = searchHits.getSearchHits();
+            List<Long> postIdList = searchHitList.stream().map(searchHit -> searchHit.getContent().getId())
+                    .collect(Collectors.toList());
+
+            // 处理highlight
+            HashMap<Long, String> postIdContentHighLight = new HashMap<>();
+            HashMap<Long, String> postIdTitleHighLight = new HashMap<>();
+            searchHitList.stream().forEach(searchHit -> {
+                // {
+                //      field: [matchContent1, matchContent2]
+                // }
+                Long postId = searchHit.getContent().getId();
+                List<String> highlightFields = searchHit.getHighlightField("content");
+                if (CollectionUtils.isNotEmpty(highlightFields)) {
+                    // 每篇文章只展示匹配到的第一个高亮内容，它这个高亮部分不知道是怎么划分的，按段吗？
+                    String contentHighLight = highlightFields.get(0);
+                    if (StrUtil.isNotBlank(contentHighLight)) {
+                        postIdContentHighLight.put(postId, contentHighLight);
+                    }
+                }
+                highlightFields = searchHit.getHighlightField("title");
+                if (CollectionUtils.isNotEmpty(highlightFields)) {
+                    // 每个标题只展示匹配到的第一个高亮内容
+                    String titleHighLight = highlightFields.get(0);
+                    if (StrUtil.isNotBlank(titleHighLight)) {
+                        postIdTitleHighLight.put(postId, titleHighLight);
+                    }
+                }
+
+            });
+            // 根据ID批量查询数据库
+            List<Post> postList = baseMapper.selectBatchIds(postIdList);
+            if (postList != null) {
+                Map<Long, List<Post>> idPostMap = postList.stream().collect(Collectors.groupingBy(Post::getId));
+                postIdList.forEach(postId -> {
+                    if (idPostMap.containsKey(postId)) {
+                        Post post = idPostMap.get(postId).get(0);
+                        // 给结果加上highlight，内容和标题都加上
+                        String contentHighLight = postIdContentHighLight.get(postId);
+                        if (StrUtil.isNotBlank(contentHighLight)) {
+                            post.setContent(contentHighLight);//用高亮覆盖之前的content
+                        }
+                        String titleHighLight = postIdTitleHighLight.get(postId);
+                        if (StrUtil.isNotBlank(titleHighLight)) {
+                            post.setTitle(titleHighLight);//用高亮覆盖之前的title
+                        }
+
+                        resourceList.add(post);
+                    } else {
+                        // 从 es 清空 db 已物理删除的数据
+                        String delete = elasticsearchRestTemplate.delete(String.valueOf(postId), PostEsDTO.class);
+                        log.info("delete post {}", delete);
+                    }
+                });
+            }
+        }
+        page.setRecords(resourceList);
+        return page;
+    }
+
+    @NotNull
+    private static NativeSearchQuery getNativeSearchQuery(PostQueryRequest postQueryRequest) {
         Long id = postQueryRequest.getId();
         Long notId = postQueryRequest.getNotId();
         String searchText = postQueryRequest.getSearchText();
@@ -149,6 +223,17 @@ public class PostServiceImpl extends ServiceImpl<PostMapper, Post> implements Po
         String sortField = postQueryRequest.getSortField();
         String sortOrder = postQueryRequest.getSortOrder();
         BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
+        //查询带highlight，标题和内容都带上
+        HighlightBuilder highlightBuilder = new HighlightBuilder();
+        if (StringUtils.isNotBlank(searchText)) {
+            highlightBuilder.field("content")
+                    .preTags("<strong style=\"color: red\">")
+                    .postTags("</strong>");
+            highlightBuilder.field("title")
+                    .preTags("<strong style=\"color: red\">")
+                    .postTags("</strong>");
+        }
+
         // 过滤
         boolQueryBuilder.filter(QueryBuilders.termQuery("isDelete", 0));
         if (id != null) {
@@ -198,36 +283,16 @@ public class PostServiceImpl extends ServiceImpl<PostMapper, Post> implements Po
             sortBuilder = SortBuilders.fieldSort(sortField);
             sortBuilder.order(CommonConstant.SORT_ORDER_ASC.equals(sortOrder) ? SortOrder.ASC : SortOrder.DESC);
         }
+
         // 分页
         PageRequest pageRequest = PageRequest.of((int) current, (int) pageSize);
         // 构造查询
-        NativeSearchQuery searchQuery = new NativeSearchQueryBuilder().withQuery(boolQueryBuilder)
-                .withPageable(pageRequest).withSorts(sortBuilder).build();
-        SearchHits<PostEsDTO> searchHits = elasticsearchRestTemplate.search(searchQuery, PostEsDTO.class);
-        Page<Post> page = new Page<>();
-        page.setTotal(searchHits.getTotalHits());
-        List<Post> resourceList = new ArrayList<>();
-        // 查出结果后，从 db 获取最新动态数据（比如点赞数）
-        if (searchHits.hasSearchHits()) {
-            List<SearchHit<PostEsDTO>> searchHitList = searchHits.getSearchHits();
-            List<Long> postIdList = searchHitList.stream().map(searchHit -> searchHit.getContent().getId())
-                    .collect(Collectors.toList());
-            List<Post> postList = baseMapper.selectBatchIds(postIdList);
-            if (postList != null) {
-                Map<Long, List<Post>> idPostMap = postList.stream().collect(Collectors.groupingBy(Post::getId));
-                postIdList.forEach(postId -> {
-                    if (idPostMap.containsKey(postId)) {
-                        resourceList.add(idPostMap.get(postId).get(0));
-                    } else {
-                        // 从 es 清空 db 已物理删除的数据
-                        String delete = elasticsearchRestTemplate.delete(String.valueOf(postId), PostEsDTO.class);
-                        log.info("delete post {}", delete);
-                    }
-                });
-            }
-        }
-        page.setRecords(resourceList);
-        return page;
+        NativeSearchQuery searchQuery = new NativeSearchQueryBuilder()
+                .withQuery(boolQueryBuilder)
+                .withHighlightBuilder(highlightBuilder)
+                .withPageable(pageRequest)
+                .withSorts(sortBuilder).build();
+        return searchQuery;
     }
 
     @Override

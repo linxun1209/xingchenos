@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -54,5 +55,10 @@ public class PictureDataSource implements DataSource<Picture> {
         Page<Picture> picturePage = new Page<>(pageNum, pageSize);
         picturePage.setRecords(pictures);
         return picturePage;
+    }
+
+    @Override
+    public List<String> getSearchPrompt(String keyword) {
+        return Collections.emptyList();
     }
 }
